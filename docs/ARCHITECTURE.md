@@ -240,7 +240,112 @@ Frontend routing เป็น state `phase` ใน `App.jsx` (ไม่มี re
 
 ---
 
-## 11. คำแนะนำสิ่งที่ควรเพิ่ม (Roadmap)
+## 11. แผนภาพ (Diagrams)
 
-ดูหัวข้อ "คำแนะนำเพิ่มเติม" ท้ายเอกสาร — สรุปสั้น: face-aware crop, email แจ้งเตือนงานเสร็จ,
-Alembic migration, pagination หน้างานของฉัน, security headers (CSP)
+> GitHub render Mermaid เป็นภาพให้อัตโนมัติ
+
+### 11.1 ER Diagram (โครงสร้างฐานข้อมูล)
+```mermaid
+erDiagram
+    USERS ||--o{ JOBS : "เป็นเจ้าของ (1:N)"
+    USERS {
+        string id PK "UUID"
+        string email UK "จาก Google"
+        string username
+        string password_hash "placeholder (Google)"
+        int token_version "เพิกถอน JWT"
+        datetime created_at
+    }
+    JOBS {
+        string id PK "= job_id"
+        string user_id FK
+        string status "processing/ready/done/failed/cancelled"
+        text prompt
+        string original_filename
+        string result_path
+        datetime created_at
+        datetime updated_at
+    }
+```
+
+### 11.2 Sequence — การ login ด้วย Google
+```mermaid
+sequenceDiagram
+    participant U as ผู้ใช้
+    participant F as Frontend
+    participant G as Google
+    participant B as Backend
+    participant D as Database
+    F->>B: GET /auth/config
+    B-->>F: google_client_id
+    U->>F: กด "ดำเนินการต่อด้วย Google"
+    F->>G: login (Google Identity Services)
+    G-->>F: Google ID token (credential)
+    F->>B: POST /auth/google {credential}
+    B->>G: ตรวจ token (ลายเซ็น + aud + email_verified)
+    G-->>B: email, name
+    B->>D: หา user จาก email (ไม่มี → สร้างใหม่)
+    D-->>B: user
+    B-->>F: JWT (sub + tv)
+    F->>F: เก็บ JWT ใน localStorage
+```
+
+### 11.3 Flowchart — การไหลของงานตัดต่อ
+```mermaid
+flowchart TD
+    A[อัปโหลดวิดีโอ] --> B[extract audio<br/>ffmpeg]
+    B --> C[VAD<br/>Silero]
+    C --> D[Whisper<br/>3 pass]
+    D --> E[Gemini<br/>เลือกช่วงลบ]
+    E --> F[invert +<br/>guard 4 ชั้น]
+    F --> G[preview.json]
+    G --> H{preview<br/>mode?}
+    H -->|ใช่| I[status: ready<br/>รอผู้ใช้เลือก]
+    H -->|ไม่| J[render ffmpeg]
+    I --> K[ผู้ใช้เลือกช่วง<br/>+ แก้ซับ]
+    K --> J
+    J --> L[final_summary.mp4<br/>+ thumbnail]
+    L --> M[status: done]
+    M --> N[ดาวน์โหลด /<br/>งานของฉัน]
+```
+
+---
+
+## 12. เหตุผลการเลือกเทคโนโลยี (Design Decisions)
+
+| เลือก | ทำไม | ทางเลือกที่ตัดทิ้ง + เหตุผล |
+|---|---|---|
+| **Celery + Redis** (งาน async) | งานวิเคราะห์/render กินเวลาหลายนาที ต้องแยกออกจาก request (ไม่งั้น HTTP timeout) + คิวได้ | รันใน request ตรง → timeout · เลือก Celery เพราะเป็นมาตรฐาน Python |
+| **Google OAuth** (แทน password) | Google การันตีอีเมลจริง → ตัด password/OTP/SMTP ทิ้งหมด + ปลอดภัยกว่า + คลิกเดียว | password เอง → ต้องทำ OTP/reset/SMTP (บานปลาย) · นักศึกษาไทยมี Gmail อยู่แล้ว |
+| **JWT (stateless)** | ไม่ต้อง query session ทุก request | session ใน DB → ช้ากว่า · เพิ่ม `token_version` แก้ข้อเสียเพิกถอนไม่ได้ |
+| **`token_version`** (เพิกถอน) | JWT stateless เพิกถอนยาก → 1 คอลัมน์แก้ได้ (logout จริง/แบน) ไม่เพิ่ม query | session table → รื้อทั้ง flow |
+| **เก็บไฟล์บน disk** (ไม่ใช่ DB) | วิดีโอ/transcript เป็น blob ใหญ่ อ่านทั้งก้อน ไม่เคย query ทีละส่วน → DB ไม่ได้ประโยชน์ | เก็บใน DB → DB บวม, backup ช้า |
+| **media token** (เสิร์ฟไฟล์) | `<video>`/`<a download>` แนบ Bearer header ไม่ได้ → token ใน query แทน (อายุสั้น ผูก job) | JWT ใน URL → เสี่ยงรั่วนาน · cookie → รื้อ flow + CSRF |
+| **SQLAlchemy + create_all** | ORM ปลอดภัยจาก SQL injection · create_all พอสำหรับ schema เรียบง่าย | Alembic → เกินจำเป็นตอนนี้ (เพิ่มทีหลังได้) |
+| **React state routing** (ไม่มี router) | flow เป็น phase เดียว (upload→preview→done) ไม่ซับซ้อน | react-router → เกินจำเป็น |
+| **Google One Tap** | ประสบการณ์ "welcome back" แบบ native โดยไม่ต้องเก็บ profile เอง | สร้างการ์ด welcome เอง → ต้องเก็บรูป/ชื่อ ซ้ำซ้อน |
+
+---
+
+## 13. ข้อจำกัดที่รู้ตัว (Known Limitations)
+
+| ข้อจำกัด | รายละเอียด | เหตุผล/แผนรับมือ |
+|---|---|---|
+| **งานเก็บ 7 วัน** | ไฟล์+row ถูกลบครบ 7 วัน (`JOB_RETENTION_DAYS`) → งานหายจากหน้า "งานของฉัน" | ประหยัด disk · แจ้งผู้ใช้ "ดาวน์โหลดเก็บไว้" · ปรับ env ได้ |
+| **ไม่มี "ทำงานต่อ" งานเก่า** | หน้างานของฉันดาวน์โหลดได้อย่างเดียว ยังกลับไปแก้ช่วง/ซับงานเก่าไม่ได้ | เก็บไว้ทำภายหลัง (ข้อมูลใน preview.json ยังอยู่) |
+| **ไม่ยืนยันอีเมล/ไม่มี email** | ไม่ส่งอีเมลแจ้งเตือน/verify | Google การันตีอีเมลจริงแล้ว → ไม่จำเป็น |
+| **Whisper หลอนได้** | ช่วงเสียงยากอาจถอดผิด (repetition loop) | มี Pass 3 จับ+ถอดใหม่ (ดู CLAUDE.md §3.2) |
+| **thumbnail เฉพาะงานใหม่** | งานที่ render ก่อนมีฟีเจอร์นี้ไม่มีภาพปก | โชว์ placeholder |
+| **token ใน query string** | media/download token โผล่ใน log/history ได้ | อายุสั้น 2 ชม. + ผูก job เดียว |
+| **ต้องมีบัญชี Google** | คนไม่มี Gmail เข้าไม่ได้ | นักศึกษาไทยมี Gmail เกือบทุกคน |
+| **Gemini เป็น external + มีโควตา** | ขึ้นกับ API Google (503/quota) | retry + สลับหลาย key อัตโนมัติ |
+
+---
+
+## 14. Roadmap (สิ่งที่อาจเพิ่มในอนาคต)
+
+- **Alembic** (DB migration) — ตอน schema เปลี่ยนบ่อยขึ้น
+- **security headers** (CSP / X-Frame-Options) — กัน clickjacking
+- **email แจ้งเตือนงานเสร็จ** — render นาน ผู้ใช้ไม่ต้องเฝ้า (ต้องเพิ่ม SMTP)
+- **pagination** หน้างานของฉัน — เมื่องานเยอะ
+- **face-aware crop 9:16** — วัดแล้วยังไม่คุ้ม (ดู CLAUDE.md §6.1)
