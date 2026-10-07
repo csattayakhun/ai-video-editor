@@ -71,3 +71,6 @@ backend/transcript_cache/
 
 # ─── Debug / Dev-only scripts ───────────────────────────────────────────────
 backend/check_models.py
+
+# คู่มือ AI ภายใน ไม่ต้องขึ้น public repo
+CLAUDE.md
